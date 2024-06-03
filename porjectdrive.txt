@@ -1,0 +1,23 @@
+GoogleDriveClone/
+│
+├── GoogleDriveClone.Api/
+│   ├── Controllers/
+│   │   └── FilesController.cs
+│   ├── DataAccess/
+│   │   └── FileRepository.cs
+│   ├── Models/
+│   │   └── FileDto.cs
+│   ├── appsettings.json
+│   ├── GoogleDriveClone.Api.csproj
+│   └── Startup.cs
+│
+├── GoogleDriveClone.Web/
+│   ├── Controllers/
+│   ├── Views/
+│   ├── wwwroot/
+│   ├── appsettings.json
+│   ├── GoogleDriveClone.Web.csproj
+│   └── Startup.cs
+│
+├── GoogleDriveClone.sln
+└── README.md

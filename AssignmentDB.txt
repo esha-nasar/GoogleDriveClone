@@ -1,0 +1,28 @@
+CREATE TABLE Folder (
+  folder_id int PRIMARY KEY,
+  folder_name varchar(255) NOT NULL,
+  parentfolder_id INT,
+  FOREIGN KEY (parentfolder_id) REFERENCES Folder(folder_id) 
+);
+
+CREATE TABLE File (
+  file_id INT PRIMARY KEY,
+  file_name VARCHAR(255) NOT NULL,
+  file_size INT NOT NULL,
+  folder_id INT,
+  FOREIGN KEY(folder_id) REFERENCES Folder(folder_id)
+);
+
+INSERT INTO Folder(folder_id, folder_name, parentfolder_id)
+VALUES(1,'PFolder1', NULL),
+(2,'Folder2',1),
+(3,'Folder3',2),
+(4,'Folder4',1);
+
+INSERT INTO File(file_id, file_name, file_size, folder_id)
+VALUES(1, 'File 1.txt', 100, 1),
+(2, 'File 2.txt', 200, 1);
+
+DROP TABLE Customers;
+DROP TABLE Orders;
+DROP TABLE Shippings;

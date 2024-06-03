@@ -1,0 +1,627 @@
+//Controller/HomeController.cs
+using DinkToPdf.Contracts;
+using DinkToPdf;
+using GoogleDriveClone.Data;
+using GoogleDriveClone.Models;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using System.Text;
+
+[Authorize]
+public class HomeController : Controller
+{
+    private readonly ApplicationDbContext _context;
+    private readonly IConverter _converter;
+
+    public HomeController(ApplicationDbContext context, IConverter converter)
+    {
+        _context = context ?? throw new ArgumentNullException(nameof(context));
+        _converter = converter ?? throw new ArgumentNullException(nameof(converter));
+    }
+
+    public IActionResult Index()
+    {
+        var userIdClaim = User.Claims.FirstOrDefault(c => c.Type == "UserId");
+        if (userIdClaim == null)
+        {
+            return RedirectToAction("Login", "User");
+        }
+
+        var userId = int.Parse(userIdClaim.Value);
+        var folders = _context.Folders.Where(f => f.CreatedBy == userId && f.ParentFolderId == null && f.IsActive).ToList();
+        var files = _context.Files.Where(f => f.CreatedBy == userId && f.ParentFolderId == null && f.IsActive).ToList();
+
+        var viewModel = new FolderFileViewModel
+        {
+            Folders = folders,
+            Files = files
+        };
+
+        return View(viewModel);
+    }
+
+
+
+    [HttpPost]
+    public IActionResult CreateFolder(string folderName, int? parentFolderId)
+    {
+        var userIdClaim = User.Claims.FirstOrDefault(c => c.Type == "UserId");
+        if (userIdClaim == null)
+        {
+            return RedirectToAction("Login", "User");
+        }
+
+        var userId = int.Parse(userIdClaim.Value);
+        var folder = new Folder
+        {
+            Name = folderName,
+            ParentFolderId = parentFolderId,
+            CreatedBy = userId,
+            CreatedOn = DateTime.Now,
+            IsActive = true
+        };
+        _context.Folders.Add(folder);
+        _context.SaveChanges();
+        return RedirectToAction("Index");
+    }
+
+    [HttpPost]
+    public IActionResult DeleteFolder([FromBody] int folderId)
+    {
+        var folder = _context.Folders.Find(folderId);
+        if (folder != null)
+        {
+            folder.IsActive = false;
+            _context.SaveChanges();
+        }
+        return RedirectToAction("Index");
+    }
+
+
+    [HttpPost]
+    public async Task<IActionResult> UploadFile(IFormFile file, int parentFolderId)
+    {
+        if (file == null || file.Length == 0)
+        {
+            ModelState.AddModelError(string.Empty, "File is missing or empty.");
+            return RedirectToAction("Index");
+        }
+
+        var userIdClaim = User.Claims.FirstOrDefault(c => c.Type == "UserId");
+        if (userIdClaim == null)
+        {
+            return RedirectToAction("Login", "User");
+        }
+
+        var userId = int.Parse(userIdClaim.Value);
+        var uploadPath = Path.Combine(Directory.GetCurrentDirectory());
+
+        if (!Directory.Exists(uploadPath))
+        {
+            Directory.CreateDirectory(uploadPath);
+        }
+
+        var filePath = Path.Combine(uploadPath, file.FileName);
+
+        using (var stream = new FileStream(filePath, FileMode.Create))
+        {
+            await file.CopyToAsync(stream);
+        }
+
+        var newFile = new GoogleDriveClone.Models.File
+        {
+            Name = file.FileName,
+            ParentFolderId = parentFolderId,
+            FileExt = Path.GetExtension(file.FileName),
+            FileSizeInKB = (int)(file.Length / 1024),
+            CreatedBy = userId,
+            UploadedOn = DateTime.Now,
+            IsActive = true
+        };
+        _context.Files.Add(newFile);
+        _context.SaveChanges();
+
+        return RedirectToAction("Index");
+    }
+
+
+    public async Task<IActionResult> DownloadFile(int fileId)
+    {
+        var file = await _context.Files.FindAsync(fileId);
+        if (file == null)
+        {
+            return NotFound();
+        }
+
+        var filePath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot/files", file.Name);
+        if (!System.IO.File.Exists(filePath))
+        {
+            return NotFound();
+        }
+
+        var memory = new MemoryStream();
+        using (var stream = new FileStream(filePath, FileMode.Open))
+        {
+            await stream.CopyToAsync(memory);
+        }
+        memory.Position = 0;
+        return File(memory, GetContentType(filePath), file.Name);
+    }
+
+    private string GetContentType(string path)
+    {
+        var types = GetMimeTypes();
+        var ext = Path.GetExtension(path).ToLowerInvariant();
+        return types[ext];
+    }
+
+    private Dictionary<string, string> GetMimeTypes()
+    {
+        return new Dictionary<string, string>
+        {
+            { ".txt", "text/plain" },
+            { ".pdf", "application/pdf" },
+            { ".doc", "application/vnd.ms-word" },
+            { ".docx", "application/vnd.ms-word" },
+            { ".xls", "application/vnd.ms-excel" },
+            { ".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
+            { ".png", "image/png" },
+            { ".jpg", "image/jpeg" },
+            { ".jpeg", "image/jpeg" },
+            { ".gif", "image/gif" },
+            { ".csv", "text/csv" }
+        };
+    }
+
+    public IActionResult DownloadMetaAsPdf(int parentFolderId)
+    {
+        try
+        {
+            var folders = _context.Folders.Where(f => f.ParentFolderId == parentFolderId && f.IsActive).ToList();
+            var files = _context.Files.Where(f => f.ParentFolderId == parentFolderId && f.IsActive).ToList();
+
+            var htmlContent = new StringBuilder();
+            htmlContent.Append("<h1>Folder Meta Information</h1>");
+            htmlContent.Append("<ul>");
+
+            foreach (var folder in folders)
+            {
+                htmlContent.Append($"<li>Folder: {folder.Name}</li>");
+            }
+
+            foreach (var file in files)
+            {
+                htmlContent.Append($"<li>File: {file.Name} ({file.FileExt}, {file.FileSizeInKB} KB)</li>");
+            }
+
+            htmlContent.Append("</ul>");
+
+            var pdf = new HtmlToPdfDocument()
+            {
+                GlobalSettings = { PaperSize = PaperKind.A4 },
+                Objects = { new ObjectSettings { HtmlContent = htmlContent.ToString() } }
+            };
+
+            var pdfBytes = _converter.Convert(pdf);
+            return File(pdfBytes, "application/pdf", "MetaInformation.pdf");
+        }
+        catch (Exception ex)
+        {
+            // Log.Error(ex, "Error generating PDF");
+            return Content($"An error occurred while generating the PDF: {ex.Message}");
+        }
+    }
+
+}
+
+// Controllers/UserController.cs
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using GoogleDriveClone.Data;
+using GoogleDriveClone.Models;
+
+public class UserController : Controller
+{
+    private readonly ApplicationDbContext _context;
+
+    public UserController(ApplicationDbContext context)
+    {
+        _context = context;
+    }
+
+    [HttpGet]
+    public IActionResult Login()
+    {
+        return View();
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> Login(string login, string password)
+    {
+        var user = await _context.Users.SingleOrDefaultAsync(u => u.Login == login && u.Password == password);
+        if (user != null)
+        {
+            var claims = new List<Claim>
+            {
+                new Claim(ClaimTypes.Name, user.Name),
+                new Claim("UserId", user.Id.ToString())
+            };
+            var claimsIdentity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
+            var authProperties = new AuthenticationProperties { IsPersistent = true };
+            await HttpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(claimsIdentity), authProperties);
+            return RedirectToAction("Index", "Home");
+        }
+
+        ModelState.AddModelError(string.Empty, "Invalid login attempt.");
+        return View();
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> Logout()
+    {
+        await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+        return RedirectToAction("Login");
+    }
+}
+//Data/ApplicationDbContext.cs
+using GoogleDriveClone.Models;
+using Microsoft.EntityFrameworkCore;
+
+
+namespace GoogleDriveClone.Data
+{
+    public class ApplicationDbContext : DbContext
+    {
+        public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
+            : base(options)
+        {
+        }
+
+        public DbSet<User> Users { get; set; }
+        public DbSet<Folder> Folders { get; set; }
+        public DbSet<GoogleDriveClone.Models.File> Files { get; set; }
+    }
+}
+//Models/ErrorViewModel.cs
+namespace GoogleDriveClone.Models
+{
+    public class ErrorViewModel
+    {
+        public string? RequestId { get; set; }
+
+        public bool ShowRequestId => !string.IsNullOrEmpty(RequestId);
+    }
+}
+//Models/File.cs
+namespace GoogleDriveClone.Models
+{
+    public class File
+    {
+        public int Id { get; set; }
+        public string Name { get; set; }
+        public int ParentFolderId { get; set; }
+        public string FileExt { get; set; }
+        public int FileSizeInKB { get; set; }
+        public int CreatedBy { get; set; }
+        public DateTime UploadedOn { get; set; }
+        public bool IsActive { get; set; }
+    }
+}
+//Models/Folder.cs
+namespace GoogleDriveClone.Models
+{
+    public class Folder
+    {
+        public int Id { get; set; }
+        public string Name { get; set; }
+        public int? ParentFolderId { get; set; }
+        public int CreatedBy { get; set; }
+        public DateTime CreatedOn { get; set; }
+        public bool IsActive { get; set; }
+    }
+}
+//Model/FolderFileViewModels.cs
+namespace GoogleDriveClone.Models
+{
+    public class FolderFileViewModel
+    {
+        public List<Folder> Folders { get; set; }
+        public List<File> Files { get; set; }
+    }
+}
+//Models/LoginViewModel.cs
+using System.ComponentModel.DataAnnotations;
+
+public class LoginViewModel
+{
+    [Required]
+    public string Login { get; set; }
+
+    [Required]
+    public string Password { get; set; }
+}
+//Models/User.cs
+namespace GoogleDriveClone.Models
+{
+    public class User
+    {
+        public int Id { get; set; }
+        public string Name { get; set; }
+        public string Login { get; set; }
+        public string Password { get; set; }
+        public string Email { get; set; }
+    }
+}
+//Views/Home/Index.cshtml
+<h1>Folders</h1>
+<ul>
+    @foreach (var folder in Model.Folders)
+    {
+        <li>
+            @folder.Name
+            <button class="delete-folder" data-id="@folder.Id">Delete</button>
+        </li>
+    }
+</ul>
+
+<h2>Files</h2>
+<ul>
+    @foreach (var file in Model.Files)
+    {
+        <li>
+            @file.Name  (@file.FileExt, @file.FileSizeInKB)
+        </li>
+    }
+</ul>
+
+<h2>Create New Folder</h2>
+<form asp-action="CreateFolder" method="post">
+    <input type="text" name="folderName" />
+    <button type="submit">Create</button>
+</form>
+
+<h2>Upload File</h2>
+<form asp-action="UploadFile" method="post" enctype="multipart/form-data">
+    <input type="file" name="file" />
+    <select name="parentFolderId" class="form-control">
+        <option value="">Select</option>
+        @foreach (var folder in Model.Folders)
+        {
+            <option value="@folder.Id">@folder.Name</option>
+        }
+    </select>
+    <button type="submit">Upload</button>
+</form>
+
+<p>
+    <a asp-action="DownloadMetaAsPdf" asp-route-parentFolderId="0">Download Meta Information as PDF</a>
+</p>
+
+<script>
+    document.querySelectorAll('.delete-folder').forEach(btn => {
+        btn.addEventListener('click', () => {
+            if (confirm('Are you sure you want to delete this folder?')) {
+                fetch('/Home/DeleteFolder', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'RequestVerificationToken': document.querySelector('input[name="__RequestVerificationToken"]').value
+                    },
+                    body: JSON.stringify({ folderId: btn.dataset.id })
+                }).then(() => location.reload());
+            }
+        });
+    });
+</script>
+//Views/Home/Privacy.cshtml
+@{
+    ViewData["Title"] = "Privacy Policy";
+}
+<h1>@ViewData["Title"]</h1>
+
+<p>Use this page to detail your site's privacy policy.</p>
+
+
+//Views/Shared/_Layout.cshtml
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>@ViewData["Title"] - GoogleDriveClone</title>
+    <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.min.css" />
+    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+    <link rel="stylesheet" href="~/GoogleDriveClone.styles.css" asp-append-version="true" />
+</head>
+<body>
+    <header>
+        <nav class="navbar navbar-expand-sm navbar-toggleable-sm navbar-light bg-white border-bottom box-shadow mb-3">
+            <div class="container-fluid">
+                <a class="navbar-brand" asp-area="" asp-controller="Home" asp-action="Index">GoogleDriveClone</a>
+                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target=".navbar-collapse" aria-controls="navbarSupportedContent"
+                        aria-expanded="false" aria-label="Toggle navigation">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+                <div class="navbar-collapse collapse d-sm-inline-flex justify-content-between">
+                    <ul class="navbar-nav flex-grow-1">
+                        <li class="nav-item">
+                            <a class="nav-link text-dark" asp-area="" asp-controller="Home" asp-action="Index">Home</a>
+                        </li>
+                    </ul>
+                    <ul class="navbar-nav">
+                        <li class="nav-item">
+                            <form id="logoutForm" method="post" asp-controller="User" asp-action="Logout">
+                                <button type="submit" class="btn btn-link nav-link text-dark">Logout</button>
+                            </form>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </nav>
+    </header>
+    <div class="container">
+        <main role="main" class="pb-3">
+            @RenderBody()
+        </main>
+    </div>
+
+    <footer class="border-top footer text-muted">
+        <div class="container">
+            &copy; 2024 - GoogleDriveClone - <a asp-area="" asp-controller="Home" asp-action="Privacy">Privacy</a>
+        </div>
+    </footer>
+    <script src="~/lib/jquery/dist/jquery.min.js"></script>
+    <script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="~/js/site.js" asp-append-version="true"></script>
+    @await RenderSectionAsync("Scripts", required: false)
+</body>
+</html>
+\\Views\Shared\_ValidationScriptsPartial.cshtml
+<script src="~/lib/jquery-validation/dist/jquery.validate.min.js"></script>
+<script src="~/lib/jquery-validation-unobtrusive/jquery.validate.unobtrusive.min.js"></script>
+
+\\Views\Shared\Error.cshtml
+@model ErrorViewModel
+@{
+    ViewData["Title"] = "Error";
+}
+
+<h1 class="text-danger">Error.</h1>
+<h2 class="text-danger">An error occurred while processing your request.</h2>
+
+@if (Model.ShowRequestId)
+{
+    <p>
+        <strong>Request ID:</strong> <code>@Model.RequestId</code>
+    </p>
+}
+
+<h3>Development Mode</h3>
+<p>
+    Swapping to <strong>Development</strong> environment will display more detailed information about the error that occurred.
+</p>
+<p>
+    <strong>The Development environment shouldn't be enabled for deployed applications.</strong>
+    It can result in displaying sensitive information from exceptions to end users.
+    For local debugging, enable the <strong>Development</strong> environment by setting the <strong>ASPNETCORE_ENVIRONMENT</strong> environment variable to <strong>Development</strong>
+    and restarting the app.
+</p>
+
+
+
+<!-- Views/User/Login.cshtml -->
+@model LoginViewModel
+<form asp-action="Login" method="post">
+    <div class="form-group">
+        <label asp-for="Login"></label>
+        <input asp-for="Login" class="form-control" />
+    </div>
+    <div class="form-group">
+        <label asp-for="Password"></label>
+        <input asp-for="Password" type="password" class="form-control" />
+    </div>
+    <button type="submit" class="btn btn-primary">Login</button>
+</form>
+
+
+
+<!-- Views/User/Logout.cshtml -->
+@{
+    ViewData["Title"] = "Logout";
+}
+
+<h1>Logout</h1>
+<p>Are you sure you want to log out?</p>
+
+<form method="post" asp-action="Logout">
+    <button type="submit">Logout</button>
+</form>
+
+\\Views\_ViewImports.cshtml
+@using GoogleDriveClone
+@using GoogleDriveClone.Models
+@addTagHelper *, Microsoft.AspNetCore.Mvc.TagHelpers
+
+
+\\Views\_ViewStart.cshtml
+@{
+    Layout = "_Layout";
+}
+\\Views\Login.cshtml
+@model LoginViewModel
+<form asp-action="Login" method="post">
+    <div class="form-group">
+        <label asp-for="Login"></label>
+        <input asp-for="Login" class="form-control" />
+    </div>
+    <div class="form-group">
+        <label asp-for="Password"></label>
+        <input asp-for="Password" type="password" class="form-control" />
+    </div>
+    <button type="submit" class="btn btn-primary">Login</button>
+</form>
+
+//appsettings.json
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Server=PKLAHDJ3P0703\\SQLEXPRESS02;Database=GoogleDriveClone;Trusted_Connection=True;MultipleActiveResultSets=true;Encrypt=false"
+  },
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "AllowedHosts": "*"
+}
+//Program.cs
+
+using Microsoft.EntityFrameworkCore;
+using GoogleDriveClone.Data;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using DinkToPdf;
+using DinkToPdf.Contracts;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Add services to the container.
+builder.Services.AddControllersWithViews();
+
+builder.Services.AddDbContext<ApplicationDbContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+    .AddCookie(options =>
+    {
+        options.LoginPath = "/User/Login";
+        options.LogoutPath = "/User/Logout";
+    });
+
+builder.Services.AddSingleton(typeof(IConverter), new SynchronizedConverter(new PdfTools()));
+
+var app = builder.Build();
+
+// Configure the HTTP request pipeline.
+if (!app.Environment.IsDevelopment())
+{
+    app.UseExceptionHandler("/Home/Error");
+    app.UseHsts();
+}
+
+app.UseHttpsRedirection();
+app.UseStaticFiles();
+
+app.UseRouting();
+
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.MapControllerRoute(
+    name: "default",
+    pattern: "{controller=Home}/{action=Index}/{id?}");
+
+app.Run();
+var folder = _context.Folders.Where(f=>f.Id == folderId).FirstOrDefault();

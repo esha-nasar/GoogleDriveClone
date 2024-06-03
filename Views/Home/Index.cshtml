@@ -1,0 +1,131 @@
+﻿<div>
+<h1>Welcome, @ViewData["UserName"]</h1>
+</div>
+
+<div class="form-container">
+    <div>
+        <h5>Create New Folder</h5>
+        <form asp-action="CreateFolder" method="post">
+            <input type="text" name="folderName" />
+            <button type="submit" class="custom-button"><img src="~/img/folderupload.png" alt="2" asp-append-version="true" class="thumbnail" /></button>
+        </form>
+    </div>
+    <div>
+        <h5>Upload File</h5>
+        <form asp-action="UploadFile" method="post" enctype="multipart/form-data">
+            <input type="file" name="file" />
+            <button type="submit"><img src="~/img/upload.png" alt="2" asp-append-version="true" class="thumbnail" /></button>
+        </form>
+    </div>
+</div>
+
+<div class="table-responsive">
+    <table class="table table-bordered table-hover">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var folder in Model.Folders)
+            {
+                <tr>
+                    
+                    <td>
+                        <img src="~/img/folder.png" alt="Folder" class="thumbnail" />
+                        @folder.Name
+                        
+                    </td>
+                    <td>
+                        <a asp-action="ViewFolder" asp-route-folderId="@folder.Id" class="text-dark" style="text-decoration: none">Open</a>
+                        <span class="delete-folder" data-id="@folder.Id">Delete</span>
+                        @Html.AntiForgeryToken()
+                    </td>
+                </tr>
+            }
+            @foreach (var file in Model.Files)
+            {
+                <tr>
+                   
+                    <td><img src="~/img/file.png" alt="File" class="thumbnail" />@file.Name</td>
+                    <td>
+                        <a href="@Url.Action("DownloadFile", new { id = file.Id })" class="text-dark" style="text-decoration: none">Download</a>
+                        <span class="delete-file" data-id="@file.Id">Delete</span>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+
+
+
+
+
+<script>
+    document.querySelectorAll('.delete-folder').forEach(btn => {
+        btn.addEventListener('click', () => {
+            if (confirm('Are you sure you want to delete this folder?')) {
+                const folderId = btn.dataset.id;
+
+                console.log('Deleting folder with ID:', folderId); 
+
+                fetch(`/Home/DeleteFolder?folderId=${folderId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    })
+                    .then(response => {
+                        if (response.ok) {
+                            location.reload(); 
+                        } else {
+                            throw new Error('Failed to delete folder.');
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error deleting folder:', error);
+                    });
+            }
+        });
+    });
+
+
+</script>
+
+
+<script>
+    document.querySelectorAll('.delete-file').forEach(btn => {
+        btn.addEventListener('click', () => {
+            if (confirm('Are you sure you want to delete this file?')) {
+                const fileId = btn.dataset.id; 
+
+                console.log('Deleting folder with ID:', fileId);
+
+                fetch(`/Home/DeleteFile?fileId=${fileId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                   
+                })
+                    .then(response => {
+                        if (response.ok) {
+                            location.reload(); 
+                        } else {
+                            throw new Error('Failed to delete folder.');
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error deleting folder:', error);
+                        
+                    });
+            }
+        });
+    });
+
+
+</script>
+
